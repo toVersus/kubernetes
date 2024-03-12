@@ -1,0 +1,90 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: ds-always-scheduled
+spec:
+  selector:
+    matchLabels:
+      app: ds
+      component: always-scheduled
+  template:
+    metadata:
+      labels:
+        app: ds
+        component: always-scheduled
+    spec:
+      containers:
+      - name: ds-always-scheduled
+        image: nginx
+        ports:
+        - containerPort: 80
+      tolerations:
+      - operator: Exists
+        effect: NoExecute
+      - operator: Exists
+        effect: NoSchedule
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: ds-default
+spec:
+  selector:
+    matchLabels:
+      app: ds
+      component: default
+  template:
+    metadata:
+      labels:
+        app: ds
+        component: default
+    spec:
+      containers:
+      - name: ds
+        image: nginx
+        ports:
+        - containerPort: 80
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: ds-cluster-critical
+spec:
+  selector:
+    matchLabels:
+      app: ds
+      component: cluster-critical
+  template:
+    metadata:
+      labels:
+        app: ds
+        component: cluster-critical
+    spec:
+      containers:
+      - name: ds-cluster-critical
+        image: nginx
+        ports:
+        - containerPort: 80
+      priorityClassName: system-cluster-critical
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: ds-node-critical
+spec:
+  selector:
+    matchLabels:
+      app: ds
+      component: node-critical
+  template:
+    metadata:
+      labels:
+        app: ds
+        component: node-critical
+    spec:
+      containers:
+      - name: ds-node-critical
+        image: nginx
+        ports:
+        - containerPort: 80
+      priorityClassName: system-node-critical

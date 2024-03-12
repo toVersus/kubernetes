@@ -1,0 +1,36 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+- role: control-plane
+  image: kindest/node:latest
+  kubeadmConfigPatches:
+  - |
+    kind: ClusterConfiguration
+    metadata:
+      name: config
+    scheduler:
+      extraArgs:
+        v: "6"
+# Node の Allocatable CPU が 2
+- role: worker
+  image: kindest/node:latest
+  kubeadmConfigPatches:
+  - |
+    kind: JoinConfiguration
+    nodeRegistration:
+      kubeletExtraArgs:
+        # ノードの割り当て可能な CPU 数を減らすためのハック
+        system-reserved: "cpu=6"
+# Node の Allocatable CPU が 5
+- role: worker
+  image: kindest/node:latest
+  kubeadmConfigPatches:
+  - |
+    kind: JoinConfiguration
+    nodeRegistration:
+      kubeletExtraArgs:
+        # ノードの割り当て可能な CPU 数を減らすためのハック
+        system-reserved: "cpu=3"
+# Node の Allocatable CPU が 8
+- role: worker
+  image: kindest/node:latest
