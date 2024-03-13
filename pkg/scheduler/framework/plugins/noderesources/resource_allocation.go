@@ -72,7 +72,7 @@ func (r *resourceAllocationScorer) score(
 
 	score := r.scorer(requested, allocatable)
 
-	if loggerV := logger.V(10); loggerV.Enabled() { // Serializing these maps is costly.
+	if loggerV := logger.V(6); loggerV.Enabled() { // Serializing these maps is costly.
 		loggerV.Info("Listed internal info for allocatable resources, requested resources and score", "pod",
 			klog.KObj(pod), "node", klog.KObj(node), "resourceAllocationScorer", r.Name,
 			"allocatableResource", allocatable, "requestedResource", requested, "resourceScore", score,

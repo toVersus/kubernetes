@@ -666,6 +666,7 @@ func (f *frameworkImpl) RunPreFilterPlugins(ctx context.Context, state *framewor
 			logger := klog.LoggerWithName(logger, pl.Name())
 			ctx = klog.NewContext(ctx, logger)
 		}
+		logger.V(7).Info("[DEBUG] Running PreFilter plugin", "plugin", pl.Name(), "pod", klog.KObj(pod))
 		r, s := f.runPreFilterPlugin(ctx, pl, state, pod)
 		if s.IsSkip() {
 			skipPlugins.Insert(pl.Name())
@@ -818,6 +819,7 @@ func (f *frameworkImpl) RunFilterPlugins(
 			logger := klog.LoggerWithName(logger, pl.Name())
 			ctx = klog.NewContext(ctx, logger)
 		}
+		logger.V(7).Info("[DEBUG] Running Filter plugin", "plugin", pl.Name(), "pod", klog.KObj(pod), "node", klog.KObj(nodeInfo.Node()))
 		if status := f.runFilterPlugin(ctx, pl, state, pod, nodeInfo); !status.IsSuccess() {
 			if !status.IsRejected() {
 				// Filter plugins are not supposed to return any status other than
@@ -866,6 +868,7 @@ func (f *frameworkImpl) RunPostFilterPlugins(ctx context.Context, state *framewo
 			logger := klog.LoggerWithName(logger, pl.Name())
 			ctx = klog.NewContext(ctx, logger)
 		}
+		logger.V(7).Info("[DEBUG] Running PostFilter plugin", "plugin", pl.Name(), "pod", klog.KObj(pod))
 		r, s := f.runPostFilterPlugin(ctx, pl, state, pod, filteredNodeStatusMap)
 		if s.IsSuccess() {
 			return r, s
@@ -1011,6 +1014,7 @@ func (f *frameworkImpl) RunPreScorePlugins(
 			logger := klog.LoggerWithName(logger, pl.Name())
 			ctx = klog.NewContext(ctx, logger)
 		}
+		logger.V(7).Info("[DEBUG] Running PreScore plugin", "plugin", pl.Name(), "pod", klog.KObj(pod))
 		status = f.runPreScorePlugin(ctx, pl, state, pod, nodes)
 		if status.IsSkip() {
 			skipPlugins.Insert(pl.Name())
@@ -1076,6 +1080,7 @@ func (f *frameworkImpl) RunScorePlugins(ctx context.Context, state *framework.Cy
 					logger := klog.LoggerWithName(logger, pl.Name())
 					ctx = klog.NewContext(ctx, logger)
 				}
+				logger.V(7).Info("[DEBUG] Running Score plugin", "plugin", pl.Name(), "pod", klog.KObj(pod))
 				s, status := f.runScorePlugin(ctx, pl, state, pod, nodeName)
 				if !status.IsSuccess() {
 					err := fmt.Errorf("plugin %q failed with: %w", pl.Name(), status.AsError())
@@ -1185,6 +1190,7 @@ func (f *frameworkImpl) RunPreBindPlugins(ctx context.Context, state *framework.
 			logger := klog.LoggerWithName(logger, pl.Name())
 			ctx = klog.NewContext(ctx, logger)
 		}
+		logger.V(7).Info("[DEBUG] Running PreBind plugin", "plugin", pl.Name(), "pod", klog.KObj(pod))
 		status = f.runPreBindPlugin(ctx, pl, state, pod, nodeName)
 		if !status.IsSuccess() {
 			if status.IsRejected() {
@@ -1230,6 +1236,7 @@ func (f *frameworkImpl) RunBindPlugins(ctx context.Context, state *framework.Cyc
 			logger := klog.LoggerWithName(logger, pl.Name())
 			ctx = klog.NewContext(ctx, logger)
 		}
+		logger.V(7).Info("[DEBUG] Running Bind plugin", "plugin", pl.Name(), "pod", klog.KObj(pod))
 		status = f.runBindPlugin(ctx, pl, state, pod, nodeName)
 		if status.IsSkip() {
 			continue
@@ -1276,6 +1283,7 @@ func (f *frameworkImpl) RunPostBindPlugins(ctx context.Context, state *framework
 			logger := klog.LoggerWithName(logger, pl.Name())
 			ctx = klog.NewContext(ctx, logger)
 		}
+		logger.V(7).Info("[DEBUG] Running PostBind plugin", "plugin", pl.Name(), "pod", klog.KObj(pod))
 		f.runPostBindPlugin(ctx, pl, state, pod, nodeName)
 	}
 }
@@ -1312,6 +1320,7 @@ func (f *frameworkImpl) RunReservePluginsReserve(ctx context.Context, state *fra
 			logger := klog.LoggerWithName(logger, pl.Name())
 			ctx = klog.NewContext(ctx, logger)
 		}
+		logger.V(7).Info("[DEBUG] Running Reserve plugin", "plugin", pl.Name(), "pod", klog.KObj(pod))
 		status = f.runReservePluginReserve(ctx, pl, state, pod, nodeName)
 		if !status.IsSuccess() {
 			if status.IsRejected() {
@@ -1398,6 +1407,7 @@ func (f *frameworkImpl) RunPermitPlugins(ctx context.Context, state *framework.C
 			logger := klog.LoggerWithName(logger, pl.Name())
 			ctx = klog.NewContext(ctx, logger)
 		}
+		logger.V(7).Info("[DEBUG] Running Permit plugin", "plugin", pl.Name(), "pod", klog.KObj(pod))
 		status, timeout := f.runPermitPlugin(ctx, pl, state, pod, nodeName)
 		if !status.IsSuccess() {
 			if status.IsRejected() {

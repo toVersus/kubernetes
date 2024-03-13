@@ -23,6 +23,7 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/klog/v2"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
 	"k8s.io/kubernetes/pkg/scheduler/framework/plugins/names"
 )
@@ -52,6 +53,7 @@ func (pl *ImageLocality) Name() string {
 
 // Score invoked at the score extension point.
 func (pl *ImageLocality) Score(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodeName string) (int64, *framework.Status) {
+	logger := klog.FromContext(ctx)
 	nodeInfo, err := pl.handle.SnapshotSharedLister().NodeInfos().Get(nodeName)
 	if err != nil {
 		return 0, framework.AsStatus(fmt.Errorf("getting node %q from Snapshot: %w", nodeName, err))
@@ -63,8 +65,8 @@ func (pl *ImageLocality) Score(ctx context.Context, state *framework.CycleState,
 	}
 	totalNumNodes := len(nodeInfos)
 
-	score := calculatePriority(sumImageScores(nodeInfo, pod.Spec.Containers, totalNumNodes), len(pod.Spec.Containers))
-
+	score := calculatePriority(logger, sumImageScores(logger, nodeInfo, pod.Spec.Containers, totalNumNodes), len(pod.Spec.Containers))
+	logger.V(5).Info("[DEBUG] Caluculated Priority", "score", score, "plugin", pl.Name())
 	return score, nil
 }
 
@@ -80,11 +82,13 @@ func New(_ context.Context, _ runtime.Object, h framework.Handle) (framework.Plu
 
 // calculatePriority returns the priority of a node. Given the sumScores of requested images on the node, the node's
 // priority is obtained by scaling the maximum priority value with a ratio proportional to the sumScores.
-func calculatePriority(sumScores int64, numContainers int) int64 {
+func calculatePriority(logger klog.Logger, sumScores int64, numContainers int) int64 {
 	maxThreshold := maxContainerThreshold * int64(numContainers)
 	if sumScores < minThreshold {
+		logger.V(5).Info("[DEBUG] sumScores is less than minThreshold", "sumScores", sumScores, "minThreshold", minThreshold, "maxThreshold", maxThreshold)
 		sumScores = minThreshold
 	} else if sumScores > maxThreshold {
+		logger.V(5).Info("[DEBUG] sumScores is greater than maxThreshold", "sumScores", sumScores, "minThreshold", minThreshold, "maxThreshold", maxThreshold)
 		sumScores = maxThreshold
 	}
 
@@ -94,7 +98,7 @@ func calculatePriority(sumScores int64, numContainers int) int64 {
 // sumImageScores returns the sum of image scores of all the containers that are already on the node.
 // Each image receives a raw score of its size, scaled by scaledImageScore. The raw scores are later used to calculate
 // the final score. Note that the init containers are not considered for it's rare for users to deploy huge init containers.
-func sumImageScores(nodeInfo *framework.NodeInfo, containers []v1.Container, totalNumNodes int) int64 {
+func sumImageScores(logger klog.Logger, nodeInfo *framework.NodeInfo, containers []v1.Container, totalNumNodes int) int64 {
 	var sum int64
 	for _, container := range containers {
 		if state, ok := nodeInfo.ImageStates[normalizedImageName(container.Image)]; ok {

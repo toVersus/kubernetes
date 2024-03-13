@@ -155,6 +155,7 @@ func (ev *Evaluator) Preempt(ctx context.Context, pod *v1.Pod, m framework.NodeT
 	// initialized when creating the Scheduler obj.
 	// However, tests may need to manually initialize the shared pod informer.
 	podNamespace, podName := pod.Namespace, pod.Name
+	logger.V(5).Info("[Preemption] Fetching the latest pod object", "pod", klog.KRef(podNamespace, podName))
 	pod, err := ev.PodLister.Pods(pod.Namespace).Get(pod.Name)
 	if err != nil {
 		logger.Error(err, "Could not get the updated preemptor pod object", "pod", klog.KRef(podNamespace, podName))
@@ -162,12 +163,14 @@ func (ev *Evaluator) Preempt(ctx context.Context, pod *v1.Pod, m framework.NodeT
 	}
 
 	// 1) Ensure the preemptor is eligible to preempt other pods.
+	logger.V(5).Info("[Preemption] Checking if the pod is eligible for preemption", "pod", klog.KObj(pod))
 	if ok, msg := ev.PodEligibleToPreemptOthers(pod, m[pod.Status.NominatedNodeName]); !ok {
 		logger.V(5).Info("Pod is not eligible for preemption", "pod", klog.KObj(pod), "reason", msg)
 		return nil, framework.NewStatus(framework.Unschedulable, msg)
 	}
 
 	// 2) Find all preemption candidates.
+	logger.V(5).Info("[Preemption] Finding preemption candidates", "pod", klog.KObj(pod))
 	candidates, nodeToStatusMap, err := ev.findCandidates(ctx, pod, m)
 	if err != nil && len(candidates) == 0 {
 		return nil, framework.AsStatus(err)
@@ -175,6 +178,7 @@ func (ev *Evaluator) Preempt(ctx context.Context, pod *v1.Pod, m framework.NodeT
 
 	// Return a FitError only when there are no candidates that fit the pod.
 	if len(candidates) == 0 {
+		logger.V(5).Info("[Preemption] No preemption candidates found")
 		fitError := &framework.FitError{
 			Pod:         pod,
 			NumAllNodes: len(nodeToStatusMap),
@@ -186,20 +190,24 @@ func (ev *Evaluator) Preempt(ctx context.Context, pod *v1.Pod, m framework.NodeT
 		// Specify nominatedNodeName to clear the pod's nominatedNodeName status, if applicable.
 		return framework.NewPostFilterResultWithNominatedNode(""), framework.NewStatus(framework.Unschedulable, fitError.Error())
 	}
+	logger.V(5).Info("[Preemption] Preemption candidates found", "candidates", candidates)
 
 	// 3) Interact with registered Extenders to filter out some candidates if needed.
+	logger.V(5).Info("[Preemption] Calling Scheduler Extenders to filter out some candidates", "pod", klog.KObj(pod))
 	candidates, status := ev.callExtenders(logger, pod, candidates)
 	if !status.IsSuccess() {
 		return nil, status
 	}
 
 	// 4) Find the best candidate.
+	logger.V(5).Info("[Preemption] Selecting the best candidate", "pod", klog.KObj(pod))
 	bestCandidate := ev.SelectCandidate(ctx, candidates)
 	if bestCandidate == nil || len(bestCandidate.Name()) == 0 {
 		return nil, framework.NewStatus(framework.Unschedulable, "no candidate node for preemption")
 	}
 
 	// 5) Perform preparation work before nominating the selected candidate.
+	logger.V(5).Info("[Preemption] Preparing the selected candidate", "pod", klog.KObj(pod), "candidate", bestCandidate.Name())
 	if status := ev.prepareCandidate(ctx, bestCandidate, pod, ev.PluginName); !status.IsSuccess() {
 		return nil, status
 	}
@@ -379,6 +387,7 @@ func (ev *Evaluator) prepareCandidate(ctx context.Context, c Candidate, pod *v1.
 					}
 				}
 			}
+			logger.V(5).Info("[Preemption] Delete victim Pod", "pod", klog.KObj(victim), "node", c.Name())
 			if err := util.DeletePod(ctx, cs, victim); err != nil {
 				logger.Error(err, "Preempted pod", "pod", klog.KObj(victim), "preemptor", klog.KObj(pod))
 				errCh.SendErrorWithCancel(err, cancel)
