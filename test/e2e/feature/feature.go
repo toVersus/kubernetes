@@ -425,6 +425,11 @@ var (
 	Swap = framework.WithFeature(framework.ValidFeatures.Add("NodeSwap"))
 
 	// Owner: sig-node
+	// Marks tests that exercise the node's system partition, which needs the
+	// NodeSystemPartition feature gate and a systemPartition kubelet configuration.
+	NodeSystemPartition = framework.WithFeature(framework.ValidFeatures.Add("NodeSystemPartition"))
+
+	// Owner: sig-node
 	SystemNodeCriticalPod = framework.WithFeature(framework.ValidFeatures.Add("SystemNodeCriticalPod"))
 
 	// Owner: sig-node
