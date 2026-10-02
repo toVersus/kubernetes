@@ -44,6 +44,11 @@ const (
 type podContainerManagerImpl struct {
 	// qosContainersInfo hold absolute paths of the top level qos containers
 	qosContainersInfo QOSContainersInfo
+	// systemQOSContainersInfo holds absolute paths of the top level qos containers
+	// of the system partition
+	systemQOSContainersInfo QOSContainersInfo
+	// systemPartition is nil on a node without a system partition
+	systemPartition *SystemPartitionConfig
 	// Stores the mounted cgroup subsystems
 	subsystems *CgroupSubsystems
 	// cgroupManager is the cgroup Manager Object responsible for managing all
@@ -120,23 +125,31 @@ func (m *podContainerManagerImpl) applyPodLevelMemoryHigh(pod *v1.Pod, rc *Resou
 	}
 }
 
+// qosContainersInfoForPod returns the QoS cgroups of the pod's partition.
+func (m *podContainerManagerImpl) qosContainersInfoForPod(pod *v1.Pod) QOSContainersInfo {
+	if m.systemPartition.HasPod(pod) {
+		return m.systemQOSContainersInfo
+	}
+	return m.qosContainersInfo
+}
+
+// podCgroupNameIn returns the pod's cgroup name under the given QoS cgroups.
+func podCgroupNameIn(qosContainersInfo QOSContainersInfo, pod *v1.Pod) CgroupName {
+	var parentContainer CgroupName
+	switch v1qos.GetPodQOS(pod) {
+	case v1.PodQOSGuaranteed:
+		parentContainer = qosContainersInfo.Guaranteed
+	case v1.PodQOSBurstable:
+		parentContainer = qosContainersInfo.Burstable
+	case v1.PodQOSBestEffort:
+		parentContainer = qosContainersInfo.BestEffort
+	}
+	return NewCgroupName(parentContainer, GetPodCgroupNameSuffix(pod.UID))
+}
+
 // GetPodContainerName returns the CgroupName identifier, and its literal cgroupfs form on the host.
 func (m *podContainerManagerImpl) GetPodContainerName(pod *v1.Pod) (CgroupName, string) {
-	podQOS := v1qos.GetPodQOS(pod)
-	// Get the parent QOS container name
-	var parentContainer CgroupName
-	switch podQOS {
-	case v1.PodQOSGuaranteed:
-		parentContainer = m.qosContainersInfo.Guaranteed
-	case v1.PodQOSBurstable:
-		parentContainer = m.qosContainersInfo.Burstable
-	case v1.PodQOSBestEffort:
-		parentContainer = m.qosContainersInfo.BestEffort
-	}
-	podContainer := GetPodCgroupNameSuffix(pod.UID)
-
-	// Get the absolute path of the cgroup
-	cgroupName := NewCgroupName(parentContainer, podContainer)
+	cgroupName := podCgroupNameIn(m.qosContainersInfoForPod(pod), pod)
 	// Get the literal cgroupfs name
 	cgroupfsName := m.cgroupManager.Name(cgroupName)
 
@@ -241,13 +254,22 @@ func (m *podContainerManagerImpl) ReduceCPULimits(logger klog.Logger, podCgroup 
 	return m.cgroupManager.ReduceCPULimits(logger, podCgroup)
 }
 
+// qosContainerRoots returns the QoS cgroups that parent pod cgroups. Those of the
+// system partition are included even without a system partition, so that pod
+// cgroups an earlier one left behind are found and reclaimed.
+func (m *podContainerManagerImpl) qosContainerRoots() []CgroupName {
+	return []CgroupName{
+		m.qosContainersInfo.BestEffort, m.qosContainersInfo.Burstable, m.qosContainersInfo.Guaranteed,
+		m.systemQOSContainersInfo.BestEffort, m.systemQOSContainersInfo.Burstable, m.systemQOSContainersInfo.Guaranteed,
+	}
+}
+
 // IsPodCgroup returns true if the literal cgroupfs name corresponds to a pod
 func (m *podContainerManagerImpl) IsPodCgroup(cgroupfs string) (bool, types.UID) {
 	// convert the literal cgroupfs form to the driver specific value
 	cgroupName := m.cgroupManager.CgroupName(cgroupfs)
-	qosContainersList := [3]CgroupName{m.qosContainersInfo.BestEffort, m.qosContainersInfo.Burstable, m.qosContainersInfo.Guaranteed}
 	basePath := ""
-	for _, qosContainerName := range qosContainersList {
+	for _, qosContainerName := range m.qosContainerRoots() {
 		// a pod cgroup is a direct child of a qos node, so check if its a match
 		if len(cgroupName) == len(qosContainerName)+1 {
 			basePath = cgroupName[len(qosContainerName)]
@@ -271,13 +293,12 @@ func (m *podContainerManagerImpl) IsPodCgroup(cgroupfs string) (bool, types.UID)
 func (m *podContainerManagerImpl) GetAllPodsFromCgroups(logger klog.Logger) (map[types.UID]CgroupName, error) {
 	// Map for storing all the found pods on the disk
 	foundPods := make(map[types.UID]CgroupName)
-	qosContainersList := [3]CgroupName{m.qosContainersInfo.BestEffort, m.qosContainersInfo.Burstable, m.qosContainersInfo.Guaranteed}
 	// Scan through all the subsystem mounts
 	// and through each QoS cgroup directory for each subsystem mount
 	// If a pod cgroup exists in even a single subsystem mount
 	// we will attempt to delete it
 	for _, val := range m.subsystems.MountPoints {
-		for _, qosContainerName := range qosContainersList {
+		for _, qosContainerName := range m.qosContainerRoots() {
 			// get the subsystems QoS cgroup absolute name
 			qcConversion := m.cgroupManager.Name(qosContainerName)
 			qc := path.Join(val, qcConversion)

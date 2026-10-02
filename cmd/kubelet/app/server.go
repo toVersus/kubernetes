@@ -891,6 +891,11 @@ func run(ctx context.Context, s *options.KubeletServer, kubeDeps *kubelet.Depend
 			return fmt.Errorf("--system-reserved value failed to parse: %w", err)
 		}
 
+		systemPartition, err := parseSystemPartition(s.SystemPartition)
+		if err != nil {
+			return fmt.Errorf("systemPartition failed to parse: %w", err)
+		}
+
 		var hardEvictionThresholds []evictionapi.Threshold
 		// If the user requested to ignore eviction thresholds, then do not set valid values for hardEvictionThresholds here.
 		if !s.ExperimentalNodeAllocatableIgnoreEvictionThreshold {
@@ -960,6 +965,7 @@ func run(ctx context.Context, s *options.KubeletServer, kubeDeps *kubelet.Depend
 				TopologyManagerPolicy:        s.TopologyManagerPolicy,
 				TopologyManagerScope:         s.TopologyManagerScope,
 				TopologyManagerPolicyOptions: topologyManagerPolicyOptions,
+				SystemPartition:              systemPartition,
 			},
 			s.FailSwapOn,
 			kubeDeps.Recorder,
@@ -1445,6 +1451,27 @@ func parseResourceList(m map[string]string) (v1.ResourceList, error) {
 		}
 	}
 	return rl, nil
+}
+
+// parseSystemPartition converts the validated systemPartition configuration
+// into the form the container manager takes.
+func parseSystemPartition(sp *kubeletconfiginternal.SystemPartitionConfiguration) (*cm.SystemPartitionConfig, error) {
+	if sp == nil {
+		return nil, nil
+	}
+	cpus, err := cpuset.Parse(sp.CPUSet)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse cpuSet %q: %w", sp.CPUSet, err)
+	}
+	parsed := &cm.SystemPartitionConfig{
+		CPUSet:     cpus,
+		Namespaces: sets.New(sp.Namespaces...),
+	}
+	if sp.MemoryLimit != nil {
+		limit := sp.MemoryLimit.Value()
+		parsed.MemoryLimit = &limit
+	}
+	return parsed, nil
 }
 
 func newTracerProvider(s *options.KubeletServer) (oteltrace.TracerProvider, error) {

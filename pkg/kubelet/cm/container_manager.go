@@ -120,6 +120,10 @@ type ContainerManager interface {
 	// GetPodCgroupRoot returns the cgroup which contains all pods.
 	GetPodCgroupRoot() string
 
+	// GetSystemPartitionCgroupRoot returns the cgroup which contains the system
+	// partition's pods, or an empty string when the node has no system partition.
+	GetSystemPartitionCgroupRoot() string
+
 	// GetPluginRegistrationHandlers returns a set of plugin registration handlers
 	// The pluginwatcher's Handlers allow to have a single module for handling
 	// registration.
@@ -201,6 +205,21 @@ type NodeConfig struct {
 	TopologyManagerPolicy        string
 	TopologyManagerPolicyOptions map[string]string
 	CgroupVersion                int
+	SystemPartition              *SystemPartitionConfig
+}
+
+// SystemPartitionConfig is the node's system partition, which holds the pods of
+// its namespaces under a cgroup of their own.
+type SystemPartitionConfig struct {
+	MemoryLimit *int64
+	CPUSet      cpuset.CPUSet
+	Namespaces  sets.Set[string]
+}
+
+// HasPod reports whether the pod belongs in the system partition. A nil
+// partition has no pods.
+func (c *SystemPartitionConfig) HasPod(pod *v1.Pod) bool {
+	return c != nil && c.Namespaces.Has(pod.Namespace)
 }
 
 type NodeAllocatableConfig struct {

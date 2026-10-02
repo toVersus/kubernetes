@@ -125,6 +125,17 @@ type containerManagerImpl struct {
 	recorder record.EventRecorder
 	// Interface for QoS cgroup management
 	qosContainerManager QOSContainerManager
+	// systemPartitionRoot is the system partition's cgroup, and
+	// systemPartitionQOSManager manages the QoS cgroups under it. Both are
+	// unset on a node without a system partition.
+	systemPartitionRoot       CgroupName
+	systemPartitionQOSManager QOSContainerManager
+	// systemPartitionPods lists the active pods of the system partition, once
+	// its QoS cgroups are set up.
+	systemPartitionPods ActivePodsFunc
+	// sourcesReady reports whether every pod source has been seen, i.e. whether
+	// the active pods are complete.
+	sourcesReady config.SourcesReady
 	// Interface for exporting and allocating devices reported by device plugins.
 	deviceManager devicemanager.Manager
 	// Interface for CPU affinity management.
@@ -282,6 +293,18 @@ func NewContainerManager(ctx context.Context, mountUtil mount.Interface, cadviso
 		return nil, err
 	}
 
+	var systemPartitionRoot CgroupName
+	var systemPartitionQOSManager QOSContainerManager
+	if nodeConfig.SystemPartition != nil {
+		if !cgroups.IsCgroup2UnifiedMode() {
+			return nil, fmt.Errorf("systemPartition requires cgroup v2")
+		}
+		systemPartitionRoot = NewCgroupName(cgroupRoot, systemPartitionCgroupName)
+		// The node-wide MemoryQoS metrics are left to the default partition's
+		// QoS manager, which sees every pod.
+		systemPartitionQOSManager = newQOSContainerManager(subsystems, systemPartitionRoot, nodeConfig, cgroupManager, true)
+	}
+
 	cm := &containerManagerImpl{
 		cadvisorInterface:   cadvisorInterface,
 		mountUtil:           mountUtil,
@@ -293,6 +316,9 @@ func NewContainerManager(ctx context.Context, mountUtil mount.Interface, cadviso
 		cgroupRoot:          cgroupRoot,
 		recorder:            recorder,
 		qosContainerManager: qosContainerManager,
+
+		systemPartitionRoot:       systemPartitionRoot,
+		systemPartitionQOSManager: systemPartitionQOSManager,
 	}
 
 	cm.topologyManager, err = topologymanager.NewManager(
@@ -340,6 +366,11 @@ func NewContainerManager(ctx context.Context, mountUtil mount.Interface, cadviso
 		return nil, err
 	}
 	cm.topologyManager.AddHintProvider(logger, cm.cpuManager)
+	if spc := nodeConfig.SystemPartition; spc != nil {
+		if online := cm.cpuManager.GetAllCPUs(); !spc.CPUSet.IsSubsetOf(online) {
+			return nil, fmt.Errorf("systemPartition.cpuSet %q includes CPUs %q that are not online", spc.CPUSet.String(), spc.CPUSet.Difference(online).String())
+		}
+	}
 
 	cm.memoryManager, err = memorymanager.NewManager(
 		logger,
@@ -395,11 +426,13 @@ func NewContainerManager(ctx context.Context, mountUtil mount.Interface, cadviso
 func (cm *containerManagerImpl) NewPodContainerManager() PodContainerManager {
 	if cm.NodeConfig.CgroupsPerQOS {
 		return &podContainerManagerImpl{
-			qosContainersInfo: cm.GetQOSContainersInfo(),
-			subsystems:        cm.subsystems,
-			cgroupManager:     cm.cgroupManager,
-			podPidsLimit:      cm.PodPidsLimit,
-			enforceCPULimits:  cm.EnforceCPULimits,
+			qosContainersInfo:       cm.GetQOSContainersInfo(),
+			systemQOSContainersInfo: systemPartitionQOSContainersInfo(cm.cgroupRoot),
+			systemPartition:         cm.NodeConfig.SystemPartition,
+			subsystems:              cm.subsystems,
+			cgroupManager:           cm.cgroupManager,
+			podPidsLimit:            cm.PodPidsLimit,
+			enforceCPULimits:        cm.EnforceCPULimits,
 			// cpuCFSQuotaPeriod is in microseconds. NodeConfig.CPUCFSQuotaPeriod is time.Duration (measured in nano seconds).
 			// Convert (cm.CPUCFSQuotaPeriod) [nanoseconds] / time.Microsecond (1000) to get cpuCFSQuotaPeriod in microseconds.
 			cpuCFSQuotaPeriod:       uint64(cm.CPUCFSQuotaPeriod / time.Microsecond),
@@ -538,15 +571,40 @@ func (cm *containerManagerImpl) setupNode(ctx context.Context, activePods Active
 		if err := cm.createNodeAllocatableCgroups(logger); err != nil {
 			return err
 		}
-		err = cm.qosContainerManager.Start(ctx, cm.GetNodeAllocatableAbsolute, activePods, nil)
+		// The node allocatable cgroup parents every pod, but the default
+		// partition's QoS cgroups only the pods outside the system partition.
+		err = cm.qosContainerManager.Start(ctx, cm.GetNodeAllocatableAbsolute, cm.podsInSystemPartition(activePods, false), activePods)
 		if err != nil {
 			return fmt.Errorf("failed to initialize top level QOS containers: %v", err)
+		}
+		if cm.systemPartitionQOSManager != nil {
+			if err := cm.createSystemPartitionCgroups(logger); err != nil {
+				return err
+			}
+			cm.systemPartitionPods = cm.podsInSystemPartition(activePods, true)
+			if err := cm.systemPartitionQOSManager.Start(ctx, cm.systemPartitionAllocatable, cm.systemPartitionPods, nil); err != nil {
+				return fmt.Errorf("failed to initialize top level QOS containers of the system partition: %w", err)
+			}
+			// Unlike the weight of the node allocatable cgroup, the partition's
+			// follows the requests of its pods, so it is kept up to date as often
+			// as the QoS cgroups it competes with.
+			go wait.Until(func() {
+				if err := cm.updateSystemPartitionCPUWeight(logger); err != nil {
+					logger.Error(err, "Failed to update the CPU weight of the system partition")
+				}
+			}, time.Minute, wait.NeverStop)
 		}
 	}
 
 	// Enforce Node Allocatable (if required)
 	if err := cm.enforceNodeAllocatableCgroups(logger); err != nil {
 		return err
+	}
+
+	if cm.systemPartitionQOSManager != nil {
+		if err := cm.enforceSystemPartitionCgroups(logger); err != nil {
+			return err
+		}
 	}
 
 	systemContainers := []*systemContainer{}
@@ -608,6 +666,13 @@ func (cm *containerManagerImpl) GetPodCgroupRoot() string {
 	return cm.cgroupManager.Name(cm.cgroupRoot)
 }
 
+func (cm *containerManagerImpl) GetSystemPartitionCgroupRoot() string {
+	if cm.systemPartitionQOSManager == nil {
+		return ""
+	}
+	return cm.cgroupManager.Name(cm.systemPartitionRoot)
+}
+
 func (cm *containerManagerImpl) GetMountedSubsystems() *CgroupSubsystems {
 	return cm.subsystems
 }
@@ -617,7 +682,19 @@ func (cm *containerManagerImpl) GetQOSContainersInfo() QOSContainersInfo {
 }
 
 func (cm *containerManagerImpl) UpdateQOSCgroups(logger klog.Logger) error {
-	return cm.qosContainerManager.UpdateCgroups(logger)
+	var errs []error
+	if cm.systemPartitionQOSManager != nil {
+		if err := cm.systemPartitionQOSManager.UpdateCgroups(logger); err != nil {
+			errs = append(errs, fmt.Errorf("failed to update the QoS cgroups of the system partition: %w", err))
+		}
+		if err := cm.updateSystemPartitionCPUWeight(logger); err != nil {
+			errs = append(errs, fmt.Errorf("failed to update the CPU weight of the system partition: %w", err))
+		}
+	}
+	if err := cm.qosContainerManager.UpdateCgroups(logger); err != nil {
+		errs = append(errs, err)
+	}
+	return utilerrors.NewAggregate(errs)
 }
 
 func (cm *containerManagerImpl) Status() Status {
@@ -674,6 +751,8 @@ func (cm *containerManagerImpl) Start(ctx context.Context, node *v1.Node,
 	if err := cm.validateNodeAllocatable(); err != nil {
 		return err
 	}
+
+	cm.sourcesReady = sourcesReady
 
 	// Setup the node
 	if err := cm.setupNode(ctx, activePods); err != nil {
