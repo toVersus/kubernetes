@@ -18,6 +18,7 @@ package v1beta1
 
 import (
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	logsapi "k8s.io/component-base/logs/api/v1"
 	tracingapi "k8s.io/component-base/tracing/api/v1"
@@ -781,6 +782,13 @@ type KubeletConfiguration struct {
 	// CPU list rather than the "dynamic" list by systemReserved and kubeReserved.
 	// This option does not support systemReservedCgroup or kubeReservedCgroup.
 	ReservedSystemCPUs string `json:"reservedSystemCPUs,omitempty"`
+	// systemPartition places the Pods of the listed namespaces in a dedicated
+	// partition of the Pod cgroup hierarchy, with its own memory limit and cpuset,
+	// so that system Pods and user Pods do not take resources from each other.
+	// Default: nil
+	// +featureGate=NodeSystemPartition
+	// +optional
+	SystemPartition *SystemPartitionConfiguration `json:"systemPartition,omitempty"`
 	// showHiddenMetricsForVersion is the previous version for which you want to show
 	// hidden metrics.
 	// Only the previous minor version is meaningful, other values will not be allowed.
@@ -1116,6 +1124,36 @@ type ShutdownGracePeriodByPodPriority struct {
 	Priority int32 `json:"priority"`
 	// shutdownGracePeriodSeconds is the shutdown grace period in seconds
 	ShutdownGracePeriodSeconds int64 `json:"shutdownGracePeriodSeconds"`
+}
+
+// SystemPartitionConfiguration describes the node's system partition.
+type SystemPartitionConfiguration struct {
+	// memoryLimit is the hard memory limit of the system partition. It covers the
+	// partition's Pods only, separately from kubeReserved and systemReserved, and
+	// is not subtracted from Node Allocatable.
+	// Default: nil
+	// +optional
+	MemoryLimit *resource.Quantity `json:"memoryLimit,omitempty"`
+	// cpuSet is the set of CPUs the system partition's Pods run on, in Linux CPU
+	// list format (e.g. "0-3"). If reservedSystemCPUs is set, cpuSet must be a
+	// subset of it. With the static CPU Manager policy, reservedSystemCPUs is
+	// required, so that user Pods are never given the partition's CPUs exclusively.
+	// Default: ""
+	// +optional
+	CPUSet string `json:"cpuSet,omitempty"`
+	// namespaces lists the namespaces whose Pods are placed in the system
+	// partition. At least one namespace is required.
+	// +required
+	// +listType=set
+	Namespaces []string `json:"namespaces"`
+	// evictionHard is a map of signal names to quantities that defines hard
+	// eviction thresholds for the system partition, e.g. `{"memory.available": "200Mi"}`.
+	// memory.available is the only supported signal. It is measured against
+	// memoryLimit, which it requires, and a percentage is taken of memoryLimit.
+	// When a threshold is met, only Pods in the system partition are evicted.
+	// Default: nil
+	// +optional
+	EvictionHard map[string]string `json:"evictionHard,omitempty"`
 }
 
 type MemorySwapConfiguration struct {

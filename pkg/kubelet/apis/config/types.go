@@ -18,6 +18,7 @@ package config
 
 import (
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	logsapi "k8s.io/component-base/logs/api/v1"
 	tracingapi "k8s.io/component-base/tracing/api/v1"
@@ -493,6 +494,11 @@ type KubeletConfiguration struct {
 	// This provide a "static" CPU list rather than the "dynamic" list by system-reserved and kube-reserved.
 	// This option overwrites CPUs provided by system-reserved and kube-reserved.
 	ReservedSystemCPUs string
+	// SystemPartition places the Pods of the listed namespaces in a dedicated
+	// partition of the Pod cgroup hierarchy, with its own memory limit and cpuset.
+	// +featureGate=NodeSystemPartition
+	// +optional
+	SystemPartition *SystemPartitionConfiguration
 	// The previous version for which you want to show hidden metrics.
 	// Only the previous minor version is meaningful, other values will not be allowed.
 	// The format is <major>.<minor>, e.g.: '1.16'.
@@ -890,6 +896,19 @@ type ShutdownGracePeriodByPodPriority struct {
 	Priority int32
 	// shutdownGracePeriodSeconds is the shutdown grace period in seconds
 	ShutdownGracePeriodSeconds int64
+}
+
+// SystemPartitionConfiguration describes the node's system partition.
+type SystemPartitionConfiguration struct {
+	// MemoryLimit is the hard memory limit of the system partition.
+	MemoryLimit *resource.Quantity
+	// CPUSet is the set of CPUs the system partition's Pods run on, in Linux CPU list format.
+	CPUSet string
+	// Namespaces lists the namespaces whose Pods are placed in the system partition.
+	Namespaces []string
+	// EvictionHard is a map of signal names to quantities that defines hard eviction
+	// thresholds for the system partition. memory.available is the only supported signal.
+	EvictionHard map[string]string
 }
 
 type MemorySwapConfiguration struct {

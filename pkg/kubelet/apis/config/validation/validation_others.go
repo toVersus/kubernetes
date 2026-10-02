@@ -38,5 +38,9 @@ func validateKubeletOSConfiguration(kc *kubeletconfig.KubeletConfiguration) erro
 		return fmt.Errorf("invalid configuration: defaultPodSysctls is only supported on linux")
 	}
 
+	if kc.SystemPartition != nil {
+		return fmt.Errorf("invalid configuration: systemPartition is only supported on linux")
+	}
+
 	return nil
 }

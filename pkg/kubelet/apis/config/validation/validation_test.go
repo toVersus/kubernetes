@@ -23,6 +23,7 @@ import (
 	"time"
 
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	logsapi "k8s.io/component-base/logs/api/v1"
@@ -981,6 +982,91 @@ func TestValidateKubeletConfiguration(t *testing.T) {
 				return conf
 			},
 			errMsg: `invalid configuration: tlsMinVersion "VersionTLS10" is incompatible with serverCertificateKeyAlgorithm "ML-DSA-87", ML-DSA requires VersionTLS13`,
+		}, {
+			name: "valid systemPartition",
+			configure: func(conf *kubeletconfig.KubeletConfiguration) *kubeletconfig.KubeletConfiguration {
+				return withSystemPartition(conf, &kubeletconfig.SystemPartitionConfiguration{
+					MemoryLimit: new(resource.MustParse("4Gi")),
+					CPUSet:      "0-3",
+					Namespaces:  []string{"kube-system"},
+				})
+			},
+		}, {
+			name: "specify systemPartition without enabling NodeSystemPartition",
+			configure: func(conf *kubeletconfig.KubeletConfiguration) *kubeletconfig.KubeletConfiguration {
+				conf = withSystemPartition(conf, &kubeletconfig.SystemPartitionConfiguration{Namespaces: []string{"kube-system"}})
+				conf.FeatureGates[string(features.NodeSystemPartition)] = false
+				return conf
+			},
+			errMsg: "invalid configuration: systemPartition requires the NodeSystemPartition feature gate",
+		}, {
+			name: "specify systemPartition without enabling CgroupsPerQOS",
+			configure: func(conf *kubeletconfig.KubeletConfiguration) *kubeletconfig.KubeletConfiguration {
+				conf = withSystemPartition(conf, &kubeletconfig.SystemPartitionConfiguration{Namespaces: []string{"kube-system"}})
+				conf.CgroupsPerQOS = false
+				conf.EnforceNodeAllocatable = []string{}
+				return conf
+			},
+			errMsg: "invalid configuration: systemPartition requires cgroupsPerQOS (--cgroups-per-qos) to be enabled",
+		}, {
+			name: "systemPartition with no namespaces",
+			configure: func(conf *kubeletconfig.KubeletConfiguration) *kubeletconfig.KubeletConfiguration {
+				return withSystemPartition(conf, &kubeletconfig.SystemPartitionConfiguration{})
+			},
+			errMsg: "invalid configuration: systemPartition.namespaces must not be empty",
+		}, {
+			name: "systemPartition with invalid namespace name",
+			configure: func(conf *kubeletconfig.KubeletConfiguration) *kubeletconfig.KubeletConfiguration {
+				return withSystemPartition(conf, &kubeletconfig.SystemPartitionConfiguration{Namespaces: []string{"Kube_System"}})
+			},
+			errMsg: `invalid configuration: systemPartition.namespaces "Kube_System"`,
+		}, {
+			name: "systemPartition with a duplicate namespace",
+			configure: func(conf *kubeletconfig.KubeletConfiguration) *kubeletconfig.KubeletConfiguration {
+				return withSystemPartition(conf, &kubeletconfig.SystemPartitionConfiguration{Namespaces: []string{"kube-system", "kube-system"}})
+			},
+			errMsg: `invalid configuration: systemPartition.namespaces lists "kube-system" more than once`,
+		}, {
+			name: "systemPartition with zero memoryLimit",
+			configure: func(conf *kubeletconfig.KubeletConfiguration) *kubeletconfig.KubeletConfiguration {
+				return withSystemPartition(conf, &kubeletconfig.SystemPartitionConfiguration{
+					MemoryLimit: new(resource.MustParse("0")),
+					Namespaces:  []string{"kube-system"},
+				})
+			},
+			errMsg: `invalid configuration: systemPartition.memoryLimit must be positive, got "0"`,
+		}, {
+			name: "systemPartition with unparsable cpuSet",
+			configure: func(conf *kubeletconfig.KubeletConfiguration) *kubeletconfig.KubeletConfiguration {
+				return withSystemPartition(conf, &kubeletconfig.SystemPartitionConfiguration{CPUSet: "0-", Namespaces: []string{"kube-system"}})
+			},
+			errMsg: `invalid configuration: systemPartition.cpuSet "0-" failed to parse`,
+		}, {
+			name: "systemPartition cpuSet within reservedSystemCPUs",
+			configure: func(conf *kubeletconfig.KubeletConfiguration) *kubeletconfig.KubeletConfiguration {
+				conf = withReservedSystemCPUs(conf, "0-3")
+				return withSystemPartition(conf, &kubeletconfig.SystemPartitionConfiguration{CPUSet: "0-3", Namespaces: []string{"kube-system"}})
+			},
+		}, {
+			name: "systemPartition cpuSet not a subset of reservedSystemCPUs",
+			configure: func(conf *kubeletconfig.KubeletConfiguration) *kubeletconfig.KubeletConfiguration {
+				conf = withReservedSystemCPUs(conf, "0-1")
+				return withSystemPartition(conf, &kubeletconfig.SystemPartitionConfiguration{CPUSet: "0-3", Namespaces: []string{"kube-system"}})
+			},
+			errMsg: `invalid configuration: systemPartition.cpuSet "0-3" must be a subset of reservedSystemCPUs (--reserved-cpus) "0-1", CPUs 2-3 are not reserved`,
+		}, {
+			name: "systemPartition cpuSet with static cpuManagerPolicy but no reservedSystemCPUs",
+			configure: func(conf *kubeletconfig.KubeletConfiguration) *kubeletconfig.KubeletConfiguration {
+				conf.CPUManagerPolicy = "static"
+				return withSystemPartition(conf, &kubeletconfig.SystemPartitionConfiguration{CPUSet: "0-1", Namespaces: []string{"kube-system"}})
+			},
+			errMsg: "invalid configuration: systemPartition.cpuSet requires reservedSystemCPUs (--reserved-cpus) with the static cpuManagerPolicy",
+		}, {
+			name: "systemPartition without cpuSet needs no reservedSystemCPUs under static cpuManagerPolicy",
+			configure: func(conf *kubeletconfig.KubeletConfiguration) *kubeletconfig.KubeletConfiguration {
+				conf.CPUManagerPolicy = "static"
+				return withSystemPartition(conf, &kubeletconfig.SystemPartitionConfiguration{Namespaces: []string{"kube-system"}})
+			},
 		},
 	}
 
@@ -1006,4 +1092,19 @@ func TestValidateKubeletConfiguration(t *testing.T) {
 			}
 		})
 	}
+}
+
+func withSystemPartition(conf *kubeletconfig.KubeletConfiguration, sp *kubeletconfig.SystemPartitionConfiguration) *kubeletconfig.KubeletConfiguration {
+	conf.FeatureGates[string(features.NodeSystemPartition)] = true
+	conf.SystemPartition = sp
+	return conf
+}
+
+func withReservedSystemCPUs(conf *kubeletconfig.KubeletConfiguration, cpus string) *kubeletconfig.KubeletConfiguration {
+	// reservedSystemCPUs can't be combined with the reserved cgroups.
+	conf.SystemReservedCgroup = ""
+	conf.KubeReservedCgroup = ""
+	conf.EnforceNodeAllocatable = []string{"pods"}
+	conf.ReservedSystemCPUs = cpus
+	return conf
 }

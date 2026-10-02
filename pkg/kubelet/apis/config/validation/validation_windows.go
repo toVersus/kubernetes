@@ -53,5 +53,9 @@ func validateKubeletOSConfiguration(kc *kubeletconfig.KubeletConfiguration) erro
 		return fmt.Errorf("invalid configuration: defaultPodSysctls is not supported on Windows")
 	}
 
+	if kc.SystemPartition != nil {
+		return fmt.Errorf("invalid configuration: systemPartition is not supported on Windows")
+	}
+
 	return nil
 }

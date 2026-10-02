@@ -1611,6 +1611,7 @@ func GetOpenAPIDefinitions(ref common.ReferenceCallback) map[string]common.OpenA
 		kubeletconfigv1beta1.MemorySwapConfiguration{}.OpenAPIModelName():                                               schema_k8sio_kubelet_config_v1beta1_MemorySwapConfiguration(ref),
 		kubeletconfigv1beta1.SerializedNodeConfigSource{}.OpenAPIModelName():                                            schema_k8sio_kubelet_config_v1beta1_SerializedNodeConfigSource(ref),
 		kubeletconfigv1beta1.ShutdownGracePeriodByPodPriority{}.OpenAPIModelName():                                      schema_k8sio_kubelet_config_v1beta1_ShutdownGracePeriodByPodPriority(ref),
+		kubeletconfigv1beta1.SystemPartitionConfiguration{}.OpenAPIModelName():                                          schema_k8sio_kubelet_config_v1beta1_SystemPartitionConfiguration(ref),
 		kubeletconfigv1beta1.UserNamespaces{}.OpenAPIModelName():                                                        schema_k8sio_kubelet_config_v1beta1_UserNamespaces(ref),
 		abacv1beta1.Policy{}.OpenAPIModelName():                                                                         schema_pkg_apis_abac_v1beta1_Policy(ref),
 		abacv1beta1.PolicySpec{}.OpenAPIModelName():                                                                     schema_pkg_apis_abac_v1beta1_PolicySpec(ref),
@@ -77443,6 +77444,12 @@ func schema_k8sio_kubelet_config_v1beta1_KubeletConfiguration(ref common.Referen
 							Format:      "",
 						},
 					},
+					"systemPartition": {
+						SchemaProps: spec.SchemaProps{
+							Description: "systemPartition places the Pods of the listed namespaces in a dedicated partition of the Pod cgroup hierarchy, with its own memory limit and cpuset, so that system Pods and user Pods do not take resources from each other. Default: nil",
+							Ref:         ref(kubeletconfigv1beta1.SystemPartitionConfiguration{}.OpenAPIModelName()),
+						},
+					},
 					"showHiddenMetricsForVersion": {
 						SchemaProps: spec.SchemaProps{
 							Description: "showHiddenMetricsForVersion is the previous version for which you want to show hidden metrics. Only the previous minor version is meaningful, other values will not be allowed. The format is `<major>.<minor>`, e.g.: `1.16`. The purpose of this format is make sure you have the opportunity to notice if the next release hides additional metrics, rather than being surprised when they are permanently removed in the release after that. Default: \"\"",
@@ -77695,7 +77702,7 @@ func schema_k8sio_kubelet_config_v1beta1_KubeletConfiguration(ref common.Referen
 			},
 		},
 		Dependencies: []string{
-			corev1.Taint{}.OpenAPIModelName(), metav1.Duration{}.OpenAPIModelName(), logsapiv1.LoggingConfiguration{}.OpenAPIModelName(), apiv1.TracingConfiguration{}.OpenAPIModelName(), kubeletconfigv1beta1.CrashLoopBackOffConfig{}.OpenAPIModelName(), kubeletconfigv1beta1.KubeletAuthentication{}.OpenAPIModelName(), kubeletconfigv1beta1.KubeletAuthorization{}.OpenAPIModelName(), kubeletconfigv1beta1.MemoryReservation{}.OpenAPIModelName(), kubeletconfigv1beta1.MemorySwapConfiguration{}.OpenAPIModelName(), kubeletconfigv1beta1.ShutdownGracePeriodByPodPriority{}.OpenAPIModelName(), kubeletconfigv1beta1.UserNamespaces{}.OpenAPIModelName()},
+			corev1.Taint{}.OpenAPIModelName(), metav1.Duration{}.OpenAPIModelName(), logsapiv1.LoggingConfiguration{}.OpenAPIModelName(), apiv1.TracingConfiguration{}.OpenAPIModelName(), kubeletconfigv1beta1.CrashLoopBackOffConfig{}.OpenAPIModelName(), kubeletconfigv1beta1.KubeletAuthentication{}.OpenAPIModelName(), kubeletconfigv1beta1.KubeletAuthorization{}.OpenAPIModelName(), kubeletconfigv1beta1.MemoryReservation{}.OpenAPIModelName(), kubeletconfigv1beta1.MemorySwapConfiguration{}.OpenAPIModelName(), kubeletconfigv1beta1.ShutdownGracePeriodByPodPriority{}.OpenAPIModelName(), kubeletconfigv1beta1.SystemPartitionConfiguration{}.OpenAPIModelName(), kubeletconfigv1beta1.UserNamespaces{}.OpenAPIModelName()},
 	}
 }
 
@@ -77889,6 +77896,69 @@ func schema_k8sio_kubelet_config_v1beta1_ShutdownGracePeriodByPodPriority(ref co
 				Required: []string{"priority", "shutdownGracePeriodSeconds"},
 			},
 		},
+	}
+}
+
+func schema_k8sio_kubelet_config_v1beta1_SystemPartitionConfiguration(ref common.ReferenceCallback) common.OpenAPIDefinition {
+	return common.OpenAPIDefinition{
+		Schema: spec.Schema{
+			SchemaProps: spec.SchemaProps{
+				Description: "SystemPartitionConfiguration describes the node's system partition.",
+				Type:        []string{"object"},
+				Properties: map[string]spec.Schema{
+					"memoryLimit": {
+						SchemaProps: spec.SchemaProps{
+							Description: "memoryLimit is the hard memory limit of the system partition. It covers the partition's Pods only, separately from kubeReserved and systemReserved, and is not subtracted from Node Allocatable. Default: nil",
+							Ref:         ref(resource.Quantity{}.OpenAPIModelName()),
+						},
+					},
+					"cpuSet": {
+						SchemaProps: spec.SchemaProps{
+							Description: "cpuSet is the set of CPUs the system partition's Pods run on, in Linux CPU list format (e.g. \"0-3\"). If reservedSystemCPUs is set, cpuSet must be a subset of it. With the static CPU Manager policy, reservedSystemCPUs is required, so that user Pods are never given the partition's CPUs exclusively. Default: \"\"",
+							Type:        []string{"string"},
+							Format:      "",
+						},
+					},
+					"namespaces": {
+						VendorExtensible: spec.VendorExtensible{
+							Extensions: spec.Extensions{
+								"x-kubernetes-list-type": "set",
+							},
+						},
+						SchemaProps: spec.SchemaProps{
+							Description: "namespaces lists the namespaces whose Pods are placed in the system partition. At least one namespace is required.",
+							Type:        []string{"array"},
+							Items: &spec.SchemaOrArray{
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+					"evictionHard": {
+						SchemaProps: spec.SchemaProps{
+							Description: "evictionHard is a map of signal names to quantities that defines hard eviction thresholds for the system partition, e.g. `{\"memory.available\": \"200Mi\"}`. memory.available is the only supported signal. It is measured against memoryLimit, which it requires, and a percentage is taken of memoryLimit. When a threshold is met, only Pods in the system partition are evicted. Default: nil",
+							Type:        []string{"object"},
+							AdditionalProperties: &spec.SchemaOrBool{
+								Allows: true,
+								Schema: &spec.Schema{
+									SchemaProps: spec.SchemaProps{
+										Type:   []string{"string"},
+										Format: "",
+									},
+								},
+							},
+						},
+					},
+				},
+				Required: []string{"namespaces"},
+			},
+		},
+		Dependencies: []string{
+			resource.Quantity{}.OpenAPIModelName()},
 	}
 }
 

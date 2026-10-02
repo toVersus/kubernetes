@@ -451,6 +451,46 @@ func ValidateKubeletConfiguration(kc *kubeletconfig.KubeletConfiguration, featur
 		}
 	}
 
+	if sp := kc.SystemPartition; sp != nil {
+		if !localFeatureGate.Enabled(features.NodeSystemPartition) {
+			allErrors = append(allErrors, fmt.Errorf("invalid configuration: systemPartition requires the NodeSystemPartition feature gate"))
+		}
+		if !kc.CgroupsPerQOS {
+			allErrors = append(allErrors, fmt.Errorf("invalid configuration: systemPartition requires cgroupsPerQOS (--cgroups-per-qos) to be enabled"))
+		}
+		if len(sp.Namespaces) == 0 {
+			allErrors = append(allErrors, fmt.Errorf("invalid configuration: systemPartition.namespaces must not be empty"))
+		}
+		seen := sets.New[string]()
+		for _, ns := range sp.Namespaces {
+			for _, msg := range utilvalidation.IsDNS1123Label(ns) {
+				allErrors = append(allErrors, fmt.Errorf("invalid configuration: systemPartition.namespaces %q: %s", ns, msg))
+			}
+			if seen.Has(ns) {
+				allErrors = append(allErrors, fmt.Errorf("invalid configuration: systemPartition.namespaces lists %q more than once", ns))
+			}
+			seen.Insert(ns)
+		}
+		if sp.MemoryLimit != nil && sp.MemoryLimit.Sign() <= 0 {
+			allErrors = append(allErrors, fmt.Errorf("invalid configuration: systemPartition.memoryLimit must be positive, got %q", sp.MemoryLimit))
+		}
+		if sp.CPUSet != "" {
+			cpus, err := cpuset.Parse(sp.CPUSet)
+			switch {
+			case err != nil:
+				allErrors = append(allErrors, fmt.Errorf("invalid configuration: systemPartition.cpuSet %q failed to parse: %w", sp.CPUSet, err))
+			case kc.ReservedSystemCPUs != "":
+				// The CPU Manager gives user Pods every CPU outside reservedSystemCPUs.
+				if reserved, err := cpuset.Parse(kc.ReservedSystemCPUs); err == nil && !cpus.IsSubsetOf(reserved) {
+					allErrors = append(allErrors, fmt.Errorf("invalid configuration: systemPartition.cpuSet %q must be a subset of reservedSystemCPUs (--reserved-cpus) %q, CPUs %s are not reserved",
+						sp.CPUSet, kc.ReservedSystemCPUs, cpus.Difference(reserved)))
+				}
+			case kc.CPUManagerPolicy == "static":
+				allErrors = append(allErrors, fmt.Errorf("invalid configuration: systemPartition.cpuSet requires reservedSystemCPUs (--reserved-cpus) with the static cpuManagerPolicy, so that user Pods are never given the partition's CPUs exclusively"))
+			}
+		}
+	}
+
 	return utilerrors.NewAggregate(allErrors)
 }
 
