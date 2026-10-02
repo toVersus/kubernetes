@@ -735,7 +735,7 @@ func TestQOSCPUConfigUpdate(t *testing.T) {
 			ctx, cancel := context.WithCancel(ctx)
 			defer cancel()
 
-			err = testContainerManager.Start(ctx, func() v1.ResourceList { return v1.ResourceList{} }, testCase.testPods)
+			err = testContainerManager.Start(ctx, func() v1.ResourceList { return v1.ResourceList{} }, testCase.testPods, nil)
 
 			if err != nil {
 				t.Fatalf("Start() failed: %s", err)
