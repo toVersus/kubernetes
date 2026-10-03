@@ -141,6 +141,10 @@ func (cm *containerManagerStub) GetSystemPartitionCgroupRoot() string {
 	return ""
 }
 
+func (cm *containerManagerStub) SystemPartitionStats(_ klog.Logger) *SystemPartitionStats {
+	return nil
+}
+
 func (cm *containerManagerStub) GetDevices(_, _ string) []*podresourcesapi.ContainerDevices {
 	return nil
 }

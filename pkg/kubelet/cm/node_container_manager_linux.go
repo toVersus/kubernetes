@@ -241,6 +241,25 @@ func sumPodCPURequests(pods []*v1.Pod) int64 {
 	return total
 }
 
+// SystemPartitionStats returns the current usage of the system partition, or nil
+// on a node without a system partition.
+func (cm *containerManagerImpl) SystemPartitionStats(logger klog.Logger) *SystemPartitionStats {
+	if cm.systemPartitionQOSManager == nil {
+		return nil
+	}
+	stats := &SystemPartitionStats{MemoryLimitBytes: cm.NodeConfig.SystemPartition.MemoryLimit}
+	// This runs on every metrics scrape, so a failed read is not logged at a visible level.
+	if usage, err := cm.cgroupManager.MemoryUsage(cm.systemPartitionRoot); err == nil {
+		stats.MemoryUsageBytes = &usage
+	} else {
+		logger.V(4).Info("Failed to read the memory usage of the system partition", "cgroupName", cm.systemPartitionRoot, "err", err)
+	}
+	if cm.systemPartitionPods != nil {
+		stats.Pods = len(cm.systemPartitionPods())
+	}
+	return stats
+}
+
 // createNodeAllocatableCgroups creates Node Allocatable Cgroup when CgroupsPerQOS flag is specified as true
 func (cm *containerManagerImpl) createNodeAllocatableCgroups(logger klog.Logger) error {
 	nodeAllocatable := cm.internalCapacity

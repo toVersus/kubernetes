@@ -1797,6 +1797,59 @@ func (_c *MockContainerManager_SystemCgroupsLimit_Call) RunAndReturn(run func() 
 	return _c
 }
 
+// SystemPartitionStats provides a mock function for the type MockContainerManager
+func (_mock *MockContainerManager) SystemPartitionStats(logger klog.Logger) *cm.SystemPartitionStats {
+	ret := _mock.Called(logger)
+
+	if len(ret) == 0 {
+		panic("no return value specified for SystemPartitionStats")
+	}
+
+	var r0 *cm.SystemPartitionStats
+	if returnFunc, ok := ret.Get(0).(func(klog.Logger) *cm.SystemPartitionStats); ok {
+		r0 = returnFunc(logger)
+	} else {
+		if ret.Get(0) != nil {
+			r0 = ret.Get(0).(*cm.SystemPartitionStats)
+		}
+	}
+	return r0
+}
+
+// MockContainerManager_SystemPartitionStats_Call is a *mock.Call that shadows Run/Return methods with type explicit version for method 'SystemPartitionStats'
+type MockContainerManager_SystemPartitionStats_Call struct {
+	*mock.Call
+}
+
+// SystemPartitionStats is a helper method to define mock.On call
+//   - logger klog.Logger
+func (_e *MockContainerManager_Expecter) SystemPartitionStats(logger any) *MockContainerManager_SystemPartitionStats_Call {
+	return &MockContainerManager_SystemPartitionStats_Call{Call: _e.mock.On("SystemPartitionStats", logger)}
+}
+
+func (_c *MockContainerManager_SystemPartitionStats_Call) Run(run func(logger klog.Logger)) *MockContainerManager_SystemPartitionStats_Call {
+	_c.Call.Run(func(args mock.Arguments) {
+		var arg0 klog.Logger
+		if args[0] != nil {
+			arg0 = args[0].(klog.Logger)
+		}
+		run(
+			arg0,
+		)
+	})
+	return _c
+}
+
+func (_c *MockContainerManager_SystemPartitionStats_Call) Return(systemPartitionStats *cm.SystemPartitionStats) *MockContainerManager_SystemPartitionStats_Call {
+	_c.Call.Return(systemPartitionStats)
+	return _c
+}
+
+func (_c *MockContainerManager_SystemPartitionStats_Call) RunAndReturn(run func(logger klog.Logger) *cm.SystemPartitionStats) *MockContainerManager_SystemPartitionStats_Call {
+	_c.Call.Return(run)
+	return _c
+}
+
 // UnprepareDynamicResources provides a mock function for the type MockContainerManager
 func (_mock *MockContainerManager) UnprepareDynamicResources(context1 context.Context, pod *v1.Pod) error {
 	ret := _mock.Called(context1, pod)

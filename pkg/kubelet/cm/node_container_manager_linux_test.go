@@ -19,6 +19,7 @@ limitations under the License.
 package cm
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -596,6 +597,7 @@ func TestSystemPartitionPodsAndAllocatable(t *testing.T) {
 	inPartition := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "in", Namespace: "kube-system"}}
 	outside := &v1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "out", Namespace: metav1.NamespaceDefault}}
 	activePods := func() []*v1.Pod { return []*v1.Pod{inPartition, outside} }
+
 	capacity := v1.ResourceList{
 		v1.ResourceCPU:    resource.MustParse("8"),
 		v1.ResourceMemory: resource.MustParse("16Gi"),
@@ -705,4 +707,47 @@ func TestUpdateSystemPartitionCPUWeight(t *testing.T) {
 			requireHugePagesUnbounded(t, fakeCM.updates[0].ResourceParameters)
 		})
 	}
+}
+
+// memoryUsageCgroupManager reports a fixed memory usage, or fails to read it.
+type memoryUsageCgroupManager struct {
+	fakeCgroupManager
+	usage int64
+	err   error
+}
+
+func (m *memoryUsageCgroupManager) MemoryUsage(_ CgroupName) (int64, error) {
+	return m.usage, m.err
+}
+
+func TestSystemPartitionStats(t *testing.T) {
+	logger, _ := ktesting.NewTestContext(t)
+	pods := []*v1.Pod{newPartitionTestPod("kube-system", "", ""), newPartitionTestPod("kube-system", "", "")}
+
+	t.Run("no stats without a system partition", func(t *testing.T) {
+		cm := &containerManagerImpl{}
+		require.Nil(t, cm.SystemPartitionStats(logger))
+	})
+	t.Run("usage, limit and pods of the partition", func(t *testing.T) {
+		cm := &containerManagerImpl{
+			cgroupManager:             &memoryUsageCgroupManager{usage: 1 << 20},
+			NodeConfig:                NodeConfig{SystemPartition: &SystemPartitionConfig{MemoryLimit: new(int64(1 << 30))}},
+			systemPartitionQOSManager: &qosContainerManagerNoop{},
+			systemPartitionPods:       func() []*v1.Pod { return pods },
+		}
+		require.Equal(t, &SystemPartitionStats{
+			MemoryUsageBytes: new(int64(1 << 20)),
+			MemoryLimitBytes: new(int64(1 << 30)),
+			Pods:             2,
+		}, cm.SystemPartitionStats(logger))
+	})
+	t.Run("an unreadable memory usage leaves the rest", func(t *testing.T) {
+		cm := &containerManagerImpl{
+			cgroupManager:             &memoryUsageCgroupManager{err: fmt.Errorf("memory.current: no such file")},
+			NodeConfig:                NodeConfig{SystemPartition: &SystemPartitionConfig{}},
+			systemPartitionQOSManager: &qosContainerManagerNoop{},
+			systemPartitionPods:       func() []*v1.Pod { return pods },
+		}
+		require.Equal(t, &SystemPartitionStats{Pods: 2}, cm.SystemPartitionStats(logger))
+	})
 }

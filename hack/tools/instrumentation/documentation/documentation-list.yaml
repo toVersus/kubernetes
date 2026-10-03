@@ -4040,6 +4040,33 @@
   componentEndpoints:
   - component: kubelet
     endpoint: /metrics
+- name: kubelet_partition_memory_limit_bytes
+  help: Memory limit in bytes of the partition's cgroup.
+  type: Custom
+  stabilityLevel: ALPHA
+  labels:
+  - partition
+  componentEndpoints:
+  - component: kubelet
+    endpoint: /metrics
+- name: kubelet_partition_memory_usage_bytes
+  help: Memory in bytes charged to the partition's cgroup, including its page cache.
+  type: Custom
+  stabilityLevel: ALPHA
+  labels:
+  - partition
+  componentEndpoints:
+  - component: kubelet
+    endpoint: /metrics
+- name: kubelet_partition_pods
+  help: Number of active pods in the partition.
+  type: Custom
+  stabilityLevel: ALPHA
+  labels:
+  - partition
+  componentEndpoints:
+  - component: kubelet
+    endpoint: /metrics
 - name: pleg_discard_events
   subsystem: kubelet
   help: The number of discard events in PLEG.
