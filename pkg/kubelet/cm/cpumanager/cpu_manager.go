@@ -163,7 +163,13 @@ type manager struct {
 	// allocatableCPUs is the set of online CPUs as reported by the system,
 	// and available for allocation, minus the reserved set
 	allocatableCPUs cpuset.CPUSet
+
+	// sharedPoolOnly reports pods that must never be given exclusive CPUs.
+	sharedPoolOnly SharedPoolOnlyFunc
 }
+
+// SharedPoolOnlyFunc reports whether the pod must never be given exclusive CPUs.
+type SharedPoolOnlyFunc func(pod *v1.Pod) bool
 
 var _ Manager = &manager{}
 
@@ -173,7 +179,7 @@ func (s *sourcesReadyStub) AddSource(_ string) {}
 func (s *sourcesReadyStub) AllReady() bool     { return true }
 
 // NewManager creates new cpu manager based on provided policy
-func NewManager(logger klog.Logger, cpuPolicyName string, cpuPolicyOptions map[string]string, reconcilePeriod time.Duration, machineInfo *cadvisorapi.MachineInfo, specificCPUs cpuset.CPUSet, nodeAllocatableReservation v1.ResourceList, stateFileDirectory string, affinity topologymanager.Store) (Manager, error) {
+func NewManager(logger klog.Logger, cpuPolicyName string, cpuPolicyOptions map[string]string, reconcilePeriod time.Duration, machineInfo *cadvisorapi.MachineInfo, specificCPUs cpuset.CPUSet, nodeAllocatableReservation v1.ResourceList, stateFileDirectory string, affinity topologymanager.Store, sharedPoolOnly SharedPoolOnlyFunc) (Manager, error) {
 	var topo *topology.CPUTopology
 	var policy Policy
 	var err error
@@ -229,6 +235,7 @@ func NewManager(logger klog.Logger, cpuPolicyName string, cpuPolicyOptions map[s
 		nodeAllocatableReservation: nodeAllocatableReservation,
 		stateFileDirectory:         stateFileDirectory,
 		allCPUs:                    topo.CPUDetails.CPUs(),
+		sharedPoolOnly:             sharedPoolOnly,
 	}
 	manager.sourcesReady = &sourcesReadyStub{}
 	return manager, nil
@@ -279,6 +286,11 @@ func (m *manager) Allocate(ctx context.Context, p *v1.Pod, c *v1.Container, oper
 	m.Lock()
 	defer m.Unlock()
 
+	if m.isSharedPoolOnly(p) {
+		m.releaseSharedPoolOnly(logger, p, c)
+		return nil
+	}
+
 	// Call down into the policy to assign this container CPUs if required.
 	err := m.policy.Allocate(logger, m.state, p, c, operation)
 	if err != nil {
@@ -295,6 +307,13 @@ func (m *manager) AllocatePod(logger klog.Logger, pod *v1.Pod, operation lifecyc
 
 	m.Lock()
 	defer m.Unlock()
+
+	if m.isSharedPoolOnly(pod) {
+		for _, c := range append(append([]v1.Container{}, pod.Spec.InitContainers...), pod.Spec.Containers...) {
+			m.releaseSharedPoolOnly(logger, pod, &c)
+		}
+		return nil
+	}
 
 	// Call down into the policy to assign this container CPUs if required.
 	if err := m.policy.AllocatePod(logger, m.state, pod, operation); err != nil {
@@ -352,6 +371,29 @@ func (m *manager) policyRemoveContainerByRef(logger klog.Logger, podUID string, 
 	return err
 }
 
+func (m *manager) isSharedPoolOnly(pod *v1.Pod) bool {
+	return m.sharedPoolOnly != nil && m.sharedPoolOnly(pod)
+}
+
+// releaseSharedPoolOnly frees the exclusive CPUs that the checkpoint still holds
+// for a shared pool only container, from before it became one. Admission reruns
+// on every kubelet restart, so they are not kept until the pod is deleted.
+func (m *manager) releaseSharedPoolOnly(logger klog.Logger, pod *v1.Pod, container *v1.Container) {
+	podUID := string(pod.UID)
+	if _, ok := m.state.GetCPUSet(podUID, container.Name); !ok {
+		logger.V(4).Info("Exclusive CPU allocation skipped, pod must stay in the shared pool", "pod", klog.KObj(pod), "containerName", container.Name)
+		return
+	}
+	// Keep the containerMap entry: the container may still be running, and the
+	// reconcile loop has to move it onto the shared pool.
+	if err := m.policy.RemoveContainer(logger, m.state, podUID, container.Name); err != nil {
+		logger.Error(err, "Failed to release exclusive CPUs of a pod that must stay in the shared pool", "pod", klog.KObj(pod), "containerName", container.Name)
+		return
+	}
+	m.lastUpdateState.Delete(podUID, container.Name)
+	logger.Info("Released exclusive CPUs, pod must stay in the shared pool", "pod", klog.KObj(pod), "containerName", container.Name)
+}
+
 func (m *manager) State() state.Reader {
 	return m.state
 }
@@ -359,6 +401,10 @@ func (m *manager) State() state.Reader {
 func (m *manager) GetTopologyHints(logger klog.Logger, pod *v1.Pod, container *v1.Container, operation lifecycle.Operation) map[string][]topologymanager.TopologyHint {
 	// Garbage collect any stranded resources before providing TopologyHints
 	m.removeStaleState(logger)
+	// A shared pool container has no NUMA preference.
+	if m.isSharedPoolOnly(pod) {
+		return nil
+	}
 	// Delegate to active policy
 	return m.policy.GetTopologyHints(logger, m.state, pod, container, operation)
 }
@@ -366,6 +412,9 @@ func (m *manager) GetTopologyHints(logger klog.Logger, pod *v1.Pod, container *v
 func (m *manager) GetPodTopologyHints(logger klog.Logger, pod *v1.Pod, operation lifecycle.Operation) map[string][]topologymanager.TopologyHint {
 	// Garbage collect any stranded resources before providing TopologyHints
 	m.removeStaleState(logger)
+	if m.isSharedPoolOnly(pod) {
+		return nil
+	}
 	// Delegate to active policy
 	return m.policy.GetPodTopologyHints(logger, m.state, pod, operation)
 }
