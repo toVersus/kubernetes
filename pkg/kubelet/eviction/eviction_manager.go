@@ -386,10 +386,21 @@ func (m *managerImpl) synchronize(ctx context.Context, diskInfoProvider DiskInfo
 	if !foundAny {
 		return nil, nil
 	}
-	logger.Info("Eviction manager: attempting to reclaim", "resourceName", resourceToReclaim)
+	logger.Info("Eviction manager: attempting to reclaim", "resourceName", resourceToReclaim, "signal", thresholdToReclaim.Signal)
+
+	// The system partition's memory is reclaimed only from its own pods.
+	inSystemPartition := thresholdToReclaim.Signal == evictionapi.SignalSystemPartitionMemoryAvailable
+	lowMessageFmt, messageThresholds := nodeLowMessageFmt, thresholds
+	if inSystemPartition {
+		lowMessageFmt, messageThresholds = systemPartitionLowMessageFmt, []evictionapi.Threshold{thresholdToReclaim}
+	}
 
 	// record an event about the resources we are now attempting to reclaim via eviction
-	m.recorder.Eventf(m.nodeRef, v1.EventTypeWarning, "EvictionThresholdMet", "Attempting to reclaim %s", resourceToReclaim)
+	if inSystemPartition {
+		m.recorder.Eventf(m.nodeRef, v1.EventTypeWarning, "EvictionThresholdMet", "Attempting to reclaim %s in the system partition", resourceToReclaim)
+	} else {
+		m.recorder.Eventf(m.nodeRef, v1.EventTypeWarning, "EvictionThresholdMet", "Attempting to reclaim %s", resourceToReclaim)
+	}
 
 	// check if there are node-level resources we can reclaim to reduce pressure before evicting end-user pods.
 	if m.reclaimNodeLevelResources(ctx, thresholdToReclaim.Signal, resourceToReclaim) {
@@ -404,6 +415,16 @@ func (m *managerImpl) synchronize(ctx context.Context, diskInfoProvider DiskInfo
 	if !ok {
 		logger.Error(nil, "Eviction manager: no ranking function for signal", "threshold", thresholdToReclaim.Signal)
 		return nil, nil
+	}
+
+	if inSystemPartition {
+		var partitionPods []*v1.Pod
+		for _, pod := range activePods {
+			if m.config.SystemPartitionHasPod(pod) {
+				partitionPods = append(partitionPods, pod)
+			}
+		}
+		activePods = partitionPods
 	}
 
 	// the only candidates viable for eviction are those pods that had anything running.
@@ -436,7 +457,7 @@ func (m *managerImpl) synchronize(ctx context.Context, diskInfoProvider DiskInfo
 			}
 		}
 
-		message, annotations := evictionMessage(resourceToReclaim, pod, statsFunc, thresholds, observations)
+		message, annotations := evictionMessage(lowMessageFmt, resourceToReclaim, pod, statsFunc, messageThresholds, observations)
 		condition := &v1.PodCondition{
 			Type:               v1.DisruptionTarget,
 			ObservedGeneration: pod.Generation,

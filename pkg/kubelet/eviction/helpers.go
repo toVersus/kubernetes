@@ -44,6 +44,8 @@ const (
 	Reason = "Evicted"
 	// nodeLowMessageFmt is the message for evictions due to resource pressure.
 	nodeLowMessageFmt = "The node was low on resource: %v. "
+	// systemPartitionLowMessageFmt is the message for evictions due to resource pressure in the system partition.
+	systemPartitionLowMessageFmt = "The node's system partition was low on resource: %v. "
 	// nodeConditionMessageFmt is the message for evictions due to resource pressure.
 	nodeConditionMessageFmt = "The node had condition: %v. "
 	// containerMessageFmt provides additional information for containers exceeding requests
@@ -93,6 +95,8 @@ func init() {
 	signalToNodeCondition[evictionapi.SignalNodeFsInodesFree] = v1.NodeDiskPressure
 	signalToNodeCondition[evictionapi.SignalContainerFsInodesFree] = v1.NodeDiskPressure
 	signalToNodeCondition[evictionapi.SignalPIDAvailable] = v1.NodePIDPressure
+	// The system partition's memory has no node condition: the rest of the node
+	// may have plenty left, and MemoryPressure would keep user pods off it.
 
 	// map signals to resources (and vice-versa)
 	signalToResource = map[evictionapi.Signal]v1.ResourceName{}
@@ -105,6 +109,7 @@ func init() {
 	signalToResource[evictionapi.SignalNodeFsAvailable] = v1.ResourceEphemeralStorage
 	signalToResource[evictionapi.SignalNodeFsInodesFree] = resourceInodes
 	signalToResource[evictionapi.SignalPIDAvailable] = resourcePids
+	signalToResource[evictionapi.SignalSystemPartitionMemoryAvailable] = v1.ResourceMemory
 }
 
 // validSignal returns true if the signal is supported.
@@ -126,6 +131,11 @@ func getReclaimableThreshold(logger klog.Logger, thresholds []evictionapi.Thresh
 
 // ParseThresholdConfig parses the flags for thresholds.
 func ParseThresholdConfig(allocatableConfig []string, evictionHard, evictionSoft, evictionSoftGracePeriod, evictionMinimumReclaim map[string]string) ([]evictionapi.Threshold, error) {
+	for _, statements := range []map[string]string{evictionHard, evictionSoft, evictionSoftGracePeriod, evictionMinimumReclaim} {
+		if _, found := statements[string(evictionapi.SignalSystemPartitionMemoryAvailable)]; found {
+			return nil, fmt.Errorf("eviction signal %v is set as memory.available in systemPartition.evictionHard", evictionapi.SignalSystemPartitionMemoryAvailable)
+		}
+	}
 	results := []evictionapi.Threshold{}
 	hardThresholds, err := parseThresholdStatements(evictionHard)
 	if err != nil {
@@ -163,6 +173,34 @@ func ParseThresholdConfig(allocatableConfig []string, evictionHard, evictionSoft
 			results = addAllocatableThresholds(results)
 			break
 		}
+	}
+	return results, nil
+}
+
+// ParseSystemPartitionThresholds parses the system partition's evictionHard. Its
+// only signal is memory.available, which is measured against memoryLimit.
+func ParseSystemPartitionThresholds(evictionHard map[string]string, memoryLimit *resource.Quantity) ([]evictionapi.Threshold, error) {
+	var results []evictionapi.Threshold
+	for signal, val := range evictionHard {
+		if evictionapi.Signal(signal) != evictionapi.SignalMemoryAvailable {
+			return nil, fmt.Errorf("unsupported eviction signal %v, only %v is supported", signal, evictionapi.SignalMemoryAvailable)
+		}
+		if memoryLimit == nil {
+			return nil, fmt.Errorf("eviction signal %v requires memoryLimit", signal)
+		}
+		threshold, err := parseThresholdStatement(evictionapi.SignalSystemPartitionMemoryAvailable, val)
+		if err != nil {
+			return nil, err
+		}
+		if threshold == nil {
+			continue
+		}
+		// A threshold at or above the limit is always met, and would evict the
+		// partition's pods however little they use.
+		if evictionapi.GetThresholdQuantity(threshold.Value, memoryLimit).Cmp(*memoryLimit) >= 0 {
+			return nil, fmt.Errorf("eviction threshold %v %q must be less than memoryLimit %v", signal, val, memoryLimit)
+		}
+		results = append(results, *threshold)
 	}
 	return results, nil
 }
@@ -840,7 +878,18 @@ func (a byEvictionPriority) Swap(i, j int) { a[i], a[j] = a[j], a[i] }
 
 // Less ranks memory before all other resources, and ranks thresholds with no resource to reclaim last
 func (a byEvictionPriority) Less(i, j int) bool {
+	_, iSignalHasResource := signalToResource[a[i].Signal]
 	_, jSignalHasResource := signalToResource[a[j].Signal]
+	// The system partition's memory comes after every other resource. Only one
+	// threshold is acted on at a time, and as the partition's pods are mostly
+	// critical, a partition with nothing to evict would hold off node-wide
+	// pressure. The partition's memory.max still bounds it meanwhile.
+	switch evictionapi.SignalSystemPartitionMemoryAvailable {
+	case a[i].Signal:
+		return !jSignalHasResource
+	case a[j].Signal:
+		return iSignalHasResource
+	}
 	return a[i].Signal == evictionapi.SignalMemoryAvailable || a[i].Signal == evictionapi.SignalAllocatableMemoryAvailable || !jSignalHasResource
 }
 
@@ -861,6 +910,16 @@ func makeSignalObservations(logger klog.Logger, summary *statsapi.Summary) (sign
 	} else {
 		if memory := allocatableContainer.Memory; memory != nil && memory.AvailableBytes != nil && memory.WorkingSetBytes != nil {
 			result[evictionapi.SignalAllocatableMemoryAvailable] = signalObservation{
+				available: resource.NewQuantity(int64(*memory.AvailableBytes), resource.BinarySI),
+				capacity:  resource.NewQuantity(int64(*memory.AvailableBytes+*memory.WorkingSetBytes), resource.BinarySI),
+				time:      memory.Time,
+			}
+		}
+	}
+	// The system partition's memory is observed only when it has a memory limit.
+	if partition, err := getSysContainer(summary.Node.SystemContainers, statsapi.SystemContainerSystemPods); err == nil {
+		if memory := partition.Memory; memory != nil && memory.AvailableBytes != nil && memory.WorkingSetBytes != nil {
+			result[evictionapi.SignalSystemPartitionMemoryAvailable] = signalObservation{
 				available: resource.NewQuantity(int64(*memory.AvailableBytes), resource.BinarySI),
 				capacity:  resource.NewQuantity(int64(*memory.AvailableBytes+*memory.WorkingSetBytes), resource.BinarySI),
 				time:      memory.Time,
@@ -1150,9 +1209,10 @@ func isAllocatableEvictionThreshold(threshold evictionapi.Threshold) bool {
 // buildSignalToRankFunc returns ranking functions associated with resources
 func buildSignalToRankFunc(withImageFs bool, imageContainerSplitFs bool) map[evictionapi.Signal]rankFunc {
 	signalToRankFunc := map[evictionapi.Signal]rankFunc{
-		evictionapi.SignalMemoryAvailable:            rankMemoryPressure,
-		evictionapi.SignalAllocatableMemoryAvailable: rankMemoryPressure,
-		evictionapi.SignalPIDAvailable:               rankPIDPressure,
+		evictionapi.SignalMemoryAvailable:                rankMemoryPressure,
+		evictionapi.SignalAllocatableMemoryAvailable:     rankMemoryPressure,
+		evictionapi.SignalPIDAvailable:                   rankPIDPressure,
+		evictionapi.SignalSystemPartitionMemoryAvailable: rankMemoryPressure,
 	}
 	// usage of an imagefs is optional
 	// We have a dedicated Image filesystem (images and containers are on same disk)
@@ -1237,9 +1297,9 @@ func buildSignalToNodeReclaimFuncs(imageGC ImageGC, containerGC ContainerGC, wit
 }
 
 // evictionMessage constructs a useful message about why an eviction occurred, and annotations to provide metadata about the eviction
-func evictionMessage(resourceToReclaim v1.ResourceName, pod *v1.Pod, stats statsFunc, thresholds []evictionapi.Threshold, observations signalObservations) (message string, annotations map[string]string) {
+func evictionMessage(lowMessageFmt string, resourceToReclaim v1.ResourceName, pod *v1.Pod, stats statsFunc, thresholds []evictionapi.Threshold, observations signalObservations) (message string, annotations map[string]string) {
 	annotations = make(map[string]string)
-	message = fmt.Sprintf(nodeLowMessageFmt, resourceToReclaim)
+	message = fmt.Sprintf(lowMessageFmt, resourceToReclaim)
 	quantity, available := getThresholdMetInfo(resourceToReclaim, thresholds, observations)
 	if quantity != nil && available != nil {
 		message += fmt.Sprintf(thresholdMetMessageFmt, quantity, available)

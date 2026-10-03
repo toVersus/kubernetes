@@ -568,12 +568,20 @@ func NewMainKubelet(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
+	if sp := kubeCfg.SystemPartition; sp != nil {
+		partitionThresholds, err := eviction.ParseSystemPartitionThresholds(sp.EvictionHard, sp.MemoryLimit)
+		if err != nil {
+			return nil, fmt.Errorf("systemPartition.evictionHard: %w", err)
+		}
+		thresholds = append(thresholds, partitionThresholds...)
+	}
 	evictionConfig := eviction.Config{
 		PressureTransitionPeriod: kubeCfg.EvictionPressureTransitionPeriod.Duration,
 		MaxPodGracePeriodSeconds: int64(kubeCfg.EvictionMaxPodGracePeriod),
 		Thresholds:               thresholds,
 		KernelMemcgNotification:  kernelMemcgNotification,
 		PodCgroupRoot:            kubeDeps.ContainerManager.GetPodCgroupRoot(),
+		SystemPartitionHasPod:    kubeDeps.ContainerManager.GetNodeConfig().SystemPartition.HasPod,
 	}
 
 	var serviceLister corelisters.ServiceLister
