@@ -19,12 +19,15 @@ limitations under the License.
 package cm
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/klog/v2"
 	"k8s.io/klog/v2/ktesting"
 
 	v1 "k8s.io/api/core/v1"
@@ -403,5 +406,92 @@ func TestIsPodCgroupInSystemPartition(t *testing.T) {
 				require.Equal(t, tc.wantUID, uid)
 			})
 		}
+	}
+}
+
+// destroyRecordingCgroupManager records the cgroups it is asked to destroy, and
+// reports pids as the processes of every cgroup.
+type destroyRecordingCgroupManager struct {
+	fakeCgroupManager
+	pids      []int
+	destroyed []CgroupName
+}
+
+func (m *destroyRecordingCgroupManager) Pids(_ klog.Logger, _ CgroupName) []int {
+	return m.pids
+}
+
+func (m *destroyRecordingCgroupManager) Destroy(_ klog.Logger, config *CgroupConfig) error {
+	m.destroyed = append(m.destroyed, config.Name)
+	return nil
+}
+
+func TestRemoveStalePodCgroup(t *testing.T) {
+	logger, _ := ktesting.NewTestContext(t)
+	cgroupRoot := NewCgroupName(RootCgroupName, defaultNodeAllocatableCgroupName)
+	defaultQOS := testQOSContainersInfo(cgroupRoot)
+	systemQOS := systemPartitionQOSContainersInfo(cgroupRoot)
+	partition := &SystemPartitionConfig{Namespaces: sets.New("kube-system")}
+	systemPod := newPartitionTestPod("kube-system", "100m/64Mi", "200m/128Mi")
+	userPod := newPartitionTestPod(metav1.NamespaceDefault, "100m/64Mi", "200m/128Mi")
+
+	cases := []struct {
+		name            string
+		systemPartition *SystemPartitionConfig
+		pod             *v1.Pod
+		// leftover is the pod cgroup left in the other partition, if any.
+		leftover      *CgroupName
+		leftoverPids  []int
+		wantDestroyed bool
+	}{
+		{
+			name:            "a pod moved into the partition leaves its default cgroup behind",
+			systemPartition: partition,
+			pod:             systemPod,
+			leftover:        new(podCgroupNameIn(defaultQOS, systemPod)),
+			wantDestroyed:   true,
+		},
+		{
+			name:          "a pod moved out of the partition leaves its partition cgroup behind",
+			pod:           systemPod,
+			leftover:      new(podCgroupNameIn(systemQOS, systemPod)),
+			wantDestroyed: true,
+		},
+		{
+			name:            "a leftover cgroup that still has processes is kept",
+			systemPartition: partition,
+			pod:             systemPod,
+			leftover:        new(podCgroupNameIn(defaultQOS, systemPod)),
+			leftoverPids:    []int{42},
+		},
+		{
+			name:            "nothing is destroyed when no cgroup is left in the other partition",
+			systemPartition: partition,
+			pod:             userPod,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mountPoint := t.TempDir()
+			if tc.leftover != nil {
+				require.NoError(t, os.MkdirAll(filepath.Join(mountPoint, tc.leftover.ToCgroupfs()), 0o755))
+			}
+			cgroupManager := &destroyRecordingCgroupManager{pids: tc.leftoverPids}
+			m := &podContainerManagerImpl{
+				qosContainersInfo:       defaultQOS,
+				systemQOSContainersInfo: systemQOS,
+				systemPartition:         tc.systemPartition,
+				subsystems:              &CgroupSubsystems{MountPoints: map[string]string{"memory": mountPoint}},
+				cgroupManager:           cgroupManager,
+			}
+
+			m.removeStalePodCgroup(logger, tc.pod)
+
+			if !tc.wantDestroyed {
+				require.Empty(t, cgroupManager.destroyed)
+				return
+			}
+			require.Equal(t, []CgroupName{*tc.leftover}, cgroupManager.destroyed)
+		})
 	}
 }

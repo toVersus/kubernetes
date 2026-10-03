@@ -21,6 +21,8 @@ package cm
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -54,6 +56,67 @@ func systemPartitionQOSContainersInfo(cgroupRoot CgroupName) QOSContainersInfo {
 		Burstable:  NewCgroupName(partitionRoot, strings.ToLower(string(v1.PodQOSBurstable))),
 		BestEffort: NewCgroupName(partitionRoot, strings.ToLower(string(v1.PodQOSBestEffort))),
 	}
+}
+
+// cleanupSystemPartitionCgroups removes the cgroups of a system partition that is
+// no longer configured. The pod cgroups left in it are reclaimed first by the
+// orphan pod cgroup cleanup, so this runs periodically until the partition is empty.
+func (cm *containerManagerImpl) cleanupSystemPartitionCgroups(logger klog.Logger) {
+	info := systemPartitionQOSContainersInfo(cm.cgroupRoot)
+	// The QoS cgroups go before the partition's cgroup, which parents them.
+	for _, name := range []CgroupName{info.Burstable, info.BestEffort, info.Guaranteed} {
+		if !cgroupPathExists(cm.subsystems, cm.cgroupManager, name) {
+			continue
+		}
+		hasChildren, err := cgroupHasChildren(cm.subsystems, cm.cgroupManager, name)
+		if err != nil {
+			logger.Error(err, "Failed to inspect leftover system partition cgroup", "cgroupName", name)
+			return
+		}
+		if hasChildren {
+			logger.V(4).Info("Leftover system partition cgroup still has pod cgroups, deferring removal", "cgroupName", name)
+			return
+		}
+		if err := cm.cgroupManager.Destroy(logger, &CgroupConfig{Name: name}); err != nil {
+			logger.Error(err, "Failed to remove leftover system partition cgroup", "cgroupName", name)
+			return
+		}
+		logger.V(2).Info("Removed leftover system partition cgroup", "cgroupName", name)
+	}
+}
+
+// cgroupPathExists reports whether the cgroup's directory exists in any of the
+// mounted subsystems. Unlike CgroupManager.Exists, it does not depend on which
+// controllers the cgroup has enabled.
+func cgroupPathExists(subsystems *CgroupSubsystems, cgroupManager CgroupManager, name CgroupName) bool {
+	cgroupfsName := cgroupManager.Name(name)
+	for _, mountPoint := range subsystems.MountPoints {
+		if _, err := os.Stat(path.Join(mountPoint, cgroupfsName)); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// cgroupHasChildren reports whether the cgroup has a child cgroup in any of the
+// mounted subsystems.
+func cgroupHasChildren(subsystems *CgroupSubsystems, cgroupManager CgroupManager, name CgroupName) (bool, error) {
+	cgroupfsName := cgroupManager.Name(name)
+	for _, mountPoint := range subsystems.MountPoints {
+		entries, err := os.ReadDir(path.Join(mountPoint, cgroupfsName))
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return false, err
+		}
+		for _, entry := range entries {
+			if entry.IsDir() {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }
 
 // systemPartitionCgroupConfig returns the configuration of the system partition's cgroup.

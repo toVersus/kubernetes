@@ -111,7 +111,7 @@ func (m *podContainerManagerImpl) EnsureExists(logger klog.Logger, pod *v1.Pod) 
 		if err := m.cgroupManager.Create(logger, containerConfig); err != nil {
 			return fmt.Errorf("failed to create container for %v : %v", podContainerName, err)
 		}
-
+		m.removeStalePodCgroup(logger, pod)
 	}
 	return nil
 }
@@ -154,6 +154,31 @@ func (m *podContainerManagerImpl) GetPodContainerName(pod *v1.Pod) (CgroupName, 
 	cgroupfsName := m.cgroupManager.Name(cgroupName)
 
 	return cgroupName, cgroupfsName
+}
+
+// removeStalePodCgroup removes the pod's cgroup in the other partition. Turning
+// the system partition on or off moves pods between partitions, and nothing else
+// removes the cgroup they leave behind while they run.
+func (m *podContainerManagerImpl) removeStalePodCgroup(logger klog.Logger, pod *v1.Pod) {
+	stale := podCgroupNameIn(m.systemQOSContainersInfo, pod)
+	if m.systemPartition.HasPod(pod) {
+		stale = podCgroupNameIn(m.qosContainersInfo, pod)
+	}
+	if !cgroupPathExists(m.subsystems, m.cgroupManager, stale) {
+		return
+	}
+	// A pod that was not killed before the move, e.g. one with no running
+	// containers but its sandbox, still has processes there. Removing the cgroup
+	// would make systemd kill them without a grace period.
+	if pids := m.cgroupManager.Pids(logger, stale); len(pids) > 0 {
+		logger.V(2).Info("Pod cgroup left in the other partition still has processes, keeping it", "pod", klog.KObj(pod), "cgroupName", stale)
+		return
+	}
+	if err := m.cgroupManager.Destroy(logger, &CgroupConfig{Name: stale}); err != nil {
+		logger.V(2).Info("Failed to remove the pod cgroup left in the other partition", "pod", klog.KObj(pod), "cgroupName", stale, "err", err)
+		return
+	}
+	logger.V(2).Info("Removed the pod cgroup left in the other partition", "pod", klog.KObj(pod), "cgroupName", stale)
 }
 
 func (m *podContainerManagerImpl) GetPodCgroupMemoryUsage(pod *v1.Pod) (uint64, error) {
